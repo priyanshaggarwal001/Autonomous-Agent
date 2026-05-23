@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+ollama
+pdf2image
+pillow
+python-dotenv
+pydantic
+sqlalchemy
+python-multipart
+rich
+click
+pyfiglet
