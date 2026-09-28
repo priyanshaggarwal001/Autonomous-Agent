@@ -51,10 +51,20 @@ def get_connected_account():
 
 def get_active_token(db):
     tokens = db.query(GoogleToken).all()
-    return next(
-        (token for token in tokens if (token.token_data or {}).get("is_active")),
-        tokens[0] if tokens else None,
-    )
+    return next((token for token in tokens if (token.token_data or {}).get("is_active")), None)
+
+
+def logout_current_account():
+    db = get_db()
+    try:
+        token = get_active_token(db)
+        if not token:
+            return None
+        token.token_data = {**(token.token_data or {}), "is_active": False}
+        db.commit()
+        return token.user_email
+    finally:
+        db.close()
 
 def show_dashboard(title="MAILSYNC"):
     account = get_connected_account()
@@ -77,7 +87,7 @@ def show_dashboard(title="MAILSYNC"):
     actions.add_row("1", "Sync and analyze emails")
     actions.add_row("2", "Ask a question about your mail")
     actions.add_row("3", "View recent activity")
-    actions.add_row("4", "Connect or reconnect Gmail")
+    actions.add_row("4", "Switch Gmail account")
     actions.add_row("5", "Show help and examples")
     actions.add_row("0", "Exit")
     menu_panel = Panel(actions, title="What would you like to do?", border_style="bright_cyan")
@@ -142,6 +152,16 @@ def status():
     else:
         console.print("[bold red]Not logged in.[/bold red] Run 'mailsync login' first.")
     db.close()
+
+
+@cli.command()
+def logout():
+    """Log out of the currently active Gmail account."""
+    email = logout_current_account()
+    if email:
+        console.print(f"[green]Logged out of {email}.[/green]")
+    else:
+        console.print("[yellow]No Gmail account is currently connected.[/yellow]")
 
 async def run_sync(
     start_date: Optional[datetime.datetime] = None,
@@ -369,9 +389,11 @@ def history():
 def shell():
     """Open the guided Mailsync workspace."""
     def guided_login():
-        if get_connected_account():
-            console.print("[green]Gmail is already connected.[/green]")
-            return
+        current_account = get_connected_account()
+        if current_account:
+            console.print(f"[dim]Currently connected as {current_account}.[/dim]")
+            if not Confirm.ask("Log out and connect a different Gmail account", default=True):
+                return
         if Confirm.ask("Connect your Gmail account now", default=True):
             db = get_db()
             try:

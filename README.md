@@ -54,6 +54,10 @@ Run `python mailsync.py shell` for a guided workspace with connection status, nu
   ```bash
   python mailsync.py status
   ```
+- **Logout:** Disconnect the currently active Gmail account, without deleting saved account credentials.
+  ```bash
+  python mailsync.py logout
+  ```
 - **Shell:** Enter the interactive Mailsync Neural Shell.
   ```bash
   python mailsync.py shell
@@ -65,7 +69,7 @@ Run `python mailsync.py shell` for a guided workspace with connection status, nu
   After answering, MailSync can analyze the strongest matching email and optionally add a detected event to Google Calendar.
 
 ## How it Works
-1. **Connect:** Run `python mailsync.py login`.
+1. **Connect or switch accounts:** Run `python mailsync.py login`, or choose option `4` in the guided shell to log out of the current account and connect another Gmail account.
 2. **Sync:** Run `python mailsync.py sync`.
 3. **Agentic Logic:**
    - The agent reads the email body.
