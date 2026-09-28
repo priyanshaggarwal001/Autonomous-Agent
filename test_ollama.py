@@ -13,7 +13,7 @@ async def test_ollama_agent():
     Please submit it to the online portal.
     """
     
-    print("Analyzing email with local Ollama...")
+    print("Analyzing one sample email with local Ollama...")
     try:
         result = await agent.analyze_email(sample_email)
         print("\nExtraction Result:")

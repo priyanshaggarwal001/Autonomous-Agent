@@ -11,11 +11,24 @@ from ..models.event import EventExtraction
 class AgentService:
     def __init__(self):
         # We don't need an API key for local Ollama, but we'll keep the client init
-        self.client = Client()
-        # Using llama3.2-vision for both text and image tasks
-        self.model_id = 'llama3.2-vision'
+        self.client = Client(
+            timeout=float(os.getenv('OLLAMA_TIMEOUT_SECONDS', '120'))
+        )
+        # Use the compatible text model for email analysis and mailbox questions.
+        self.model_id = os.getenv('OLLAMA_TEXT_MODEL', 'llama3.2')
+        self.vision_model_id = os.getenv('OLLAMA_VISION_MODEL', 'llama3.2-vision')
+        self.num_predict = int(os.getenv('OLLAMA_NUM_PREDICT', '256'))
 
-    async def analyze_email(self, email_content: str, attachments: List[dict] = None) -> EventExtraction:
+    async def analyze_email(
+        self,
+        email_content: str,
+        attachments: List[dict] = None,
+        focus: Optional[str] = None,
+    ) -> EventExtraction:
+        focus_instruction = (
+            f"Only consider events relevant to this user focus: {focus}"
+            if focus else ""
+        )
         prompt = f"""
         Analyze the following email content and any attached descriptions. 
         Your goal is to identify if there is an important event, deadline, or meeting mentioned.
@@ -34,6 +47,8 @@ class AgentService:
 
         Email Content:
         {email_content}
+
+        {focus_instruction}
         
         Ensure you ONLY return valid JSON.
         """
@@ -42,9 +57,10 @@ class AgentService:
             response = self.client.generate(
                 model=self.model_id,
                 prompt=prompt,
-                format='json'
+                format='json',
+                options={'num_predict': self.num_predict}
             )
-            data = self._parse_json_response(response['response'])
+            data = self._complete_event_data(self._parse_json_response(response['response']))
             return EventExtraction(**data)
         except Exception as e:
             print(f"Error calling Ollama: {e}")
@@ -57,16 +73,29 @@ class AgentService:
                 is_academic=False
             )
 
-    async def analyze_with_pdf(self, email_content: str, pdf_bytes: bytes) -> EventExtraction:
-        # Convert PDF pages to images for the local vision model
+    async def analyze_with_pdf(
+        self,
+        email_content: str,
+        pdf_bytes: bytes,
+        focus: Optional[str] = None,
+    ) -> EventExtraction:
         try:
-            images = convert_from_bytes(pdf_bytes)
+            pdf_text = self._extract_pdf_text(pdf_bytes)
+            if pdf_text.strip():
+                return await self.analyze_email(
+                    f"{email_content}\n\nPDF attachment text:\n{pdf_text[:12000]}",
+                    focus=focus,
+                )
+
+            # Scanned PDFs need vision, but low resolution and two pages are enough
+            # for the common case while keeping memory and inference time bounded.
+            images = convert_from_bytes(pdf_bytes, dpi=100, first_page=1, last_page=2)
             image_parts = []
-            
-            # For simplicity and performance, we'll process the first 3 pages if it's long
-            for img in images[:3]:
+
+            for img in images:
+                img.thumbnail((1400, 1400))
                 buf = io.BytesIO()
-                img.save(buf, format='JPEG')
+                img.save(buf, format='JPEG', quality=70, optimize=True)
                 image_parts.append(buf.getvalue())
             
             prompt = """
@@ -78,16 +107,52 @@ class AgentService:
             """
             
             response = self.client.generate(
-                model=self.model_id,
+                model=self.vision_model_id,
                 prompt=f"Email: {email_content}\n\nTask: {prompt}",
                 images=image_parts,
-                format='json'
+                format='json',
+                options={'num_predict': self.num_predict}
             )
-            data = self._parse_json_response(response['response'])
+            data = self._complete_event_data(self._parse_json_response(response['response']))
             return EventExtraction(**data)
         except Exception as e:
             print(f"Local PDF Analysis failed: {e}. Falling back to text-only analysis.")
-            return await self.analyze_email(email_content)
+            return await self.analyze_email(email_content, focus=focus)
+
+    def _extract_pdf_text(self, pdf_bytes: bytes) -> str:
+        """Read text PDFs without rendering pages into images."""
+        try:
+            from pypdf import PdfReader
+
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+            return "\n".join((page.extract_text() or "") for page in reader.pages[:10])
+        except Exception:
+            return ""
+
+    async def answer_mail_question(self, question: str, emails: List[dict]) -> str:
+        context = "\n\n".join(
+            f"Subject: {email.get('subject', '(no subject)')}\n"
+            f"From: {email.get('sender', '(unknown)')}\n"
+            f"Date: {email.get('date', '(unknown)')}\n"
+            f"Body: {email.get('body', '')[:5000]}"
+            for email in emails
+        )
+        prompt = f"""
+Answer the user's question using only the matching Gmail messages below.
+Include concrete dates, subject names, senders, and relevant details when available.
+If the messages do not contain the answer, say that clearly. Do not invent facts.
+
+User question: {question}
+
+Matching messages:
+{context}
+"""
+        response = self.client.generate(
+            model=self.model_id,
+            prompt=prompt,
+            options={'num_predict': self.num_predict},
+        )
+        return response['response'].strip()
 
     def _parse_json_response(self, text: str) -> dict:
         """Extracts and parses JSON from a string that may contain extra text."""
@@ -135,3 +200,19 @@ class AgentService:
             raise ValueError(f"Parsed JSON is not a dictionary: {type(data)}")
             
         return data
+
+    def _complete_event_data(self, data: dict) -> dict:
+        """Fill missing model fields so incomplete JSON remains a safe result."""
+        defaults = {
+            'is_event': False,
+            'title': None,
+            'start_time': None,
+            'end_time': None,
+            'location': None,
+            'description': None,
+            'sentiment': 'Unknown',
+            'importance_score': 0,
+            'reasoning': 'The model did not identify a complete event.',
+            'is_academic': False,
+        }
+        return {**defaults, **data}

@@ -17,19 +17,21 @@ To use the CLI, you must use a **Desktop app** OAuth Client ID:
 4. Download the `client_id` and `client_secret`.
 
 ### 3. Configuration
-Update the `.env` file in the root directory:
+Copy `.env.example` to `.env` in the project root and replace the placeholders with the values from your Google Cloud OAuth **Desktop app** credentials:
 ```env
-GEMINI_API_KEY=your_gemini_api_key
-GOOGLE_CLIENT_ID=your_new_desktop_client_id
-GOOGLE_CLIENT_SECRET=your_new_desktop_client_secret
+GOOGLE_CLIENT_ID=your_google_oauth_client_id
+GOOGLE_CLIENT_SECRET=your_google_oauth_client_secret
+TIMEZONE=Asia/Kolkata
 ```
+
+The OAuth client must be created under **Google Cloud Console > APIs & Services > Credentials > Create credentials > OAuth client ID > Desktop app**. Also enable the Gmail API and Google Calendar API for that project.
 
 ### 4. Installation
 
 ## Usage
 
-### Animated Startup
-Every time you run `mailsync`, you'll see a unique AI-themed animation.
+### Guided Shell
+Run `python mailsync.py shell` for a guided workspace with connection status, numbered actions, date filters, question examples, and live sync progress.
 
 ### Commands
 - **Login:** Authenticate your Google account.
@@ -39,6 +41,10 @@ Every time you run `mailsync`, you'll see a unique AI-themed animation.
 - **Sync:** Scan and analyze unread emails.
   ```bash
   python mailsync.py sync
+  ```
+- **Focused sync:** Analyze only messages matching a topic or instruction.
+  ```bash
+  python mailsync.py sync --start-date 2026-09-01 --end-date 2026-09-28 --question "Which KPMG emails mention internship registration deadlines?"
   ```
 - **History:** View the last 10 processed emails and the agent's reasoning.
   ```bash
@@ -52,12 +58,18 @@ Every time you run `mailsync`, you'll see a unique AI-themed animation.
   ```bash
   python mailsync.py shell
   ```
+- **Ask:** Search Gmail for relevant messages and answer a question from their contents.
+  ```bash
+  python mailsync.py ask "What are my exam dates and subject names?"
+  ```
+  After answering, MailSync can analyze the strongest matching email and optionally add a detected event to Google Calendar.
 
 ## How it Works
 1. **Connect:** Run `python mailsync.py login`.
 2. **Sync:** Run `python mailsync.py sync`.
 3. **Agentic Logic:**
    - The agent reads the email body.
-   - If there's a PDF, Gemini analyzes the PDF content.
+  - Text PDFs are read directly; scanned PDFs use a small, two-page vision sample to reduce laptop load.
    - It extracts a title, date, time, and importance score.
    - Events are analyzed and recorded for easy tracking.
+  - The `ask` command searches Gmail, ranks the strongest matches, and gives the local model only those messages as context.

@@ -5,6 +5,7 @@ google-auth-httplib2
 google-api-python-client
 ollama
 pdf2image
+pypdf
 pillow
 python-dotenv
 pydantic

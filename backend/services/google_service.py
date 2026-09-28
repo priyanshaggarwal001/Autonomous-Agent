@@ -71,17 +71,29 @@ class GoogleService:
         user_email = user_info['email']
         
         # Save to DB
+        for existing_token in self.db.query(GoogleToken).all():
+            existing_token.token_data = {
+                **(existing_token.token_data or {}),
+                'is_active': False,
+            }
         token_entry = self.db.query(GoogleToken).filter(GoogleToken.user_email == user_email).first()
         if not token_entry:
             token_entry = GoogleToken(user_email=user_email)
             self.db.add(token_entry)
         
+        token_data['is_active'] = True
         token_entry.token_data = token_data
         self.db.commit()
         return user_email
 
     def login_cli(self):
         from google_auth_oauthlib.flow import InstalledAppFlow
+        
+        if not self.client_id or not self.client_secret:
+            raise RuntimeError(
+                "Google OAuth is not configured. Create a .env file with "
+                "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET, then try again."
+            )
         
         # Adjust config for desktop apps
         cli_config = {
@@ -94,7 +106,7 @@ class GoogleService:
         }
         
         flow = InstalledAppFlow.from_client_config(cli_config, SCOPES)
-        creds = flow.run_local_server(port=0)
+        creds = flow.run_local_server(port=0, prompt='select_account')
         
         # Get user info
         service = build('oauth2', 'v2', credentials=creds)
@@ -102,12 +114,19 @@ class GoogleService:
         user_email = user_info['email']
         
         # Save to DB
+        for existing_token in self.db.query(GoogleToken).all():
+            existing_token.token_data = {
+                **(existing_token.token_data or {}),
+                'is_active': False,
+            }
         token_entry = self.db.query(GoogleToken).filter(GoogleToken.user_email == user_email).first()
         if not token_entry:
             token_entry = GoogleToken(user_email=user_email)
             self.db.add(token_entry)
         
-        token_entry.token_data = self._credentials_to_dict(creds)
+        token_data = self._credentials_to_dict(creds)
+        token_data['is_active'] = True
+        token_entry.token_data = token_data
         self.db.commit()
         return user_email
 
@@ -161,6 +180,20 @@ class GoogleService:
         service = self.get_service(user_email, 'gmail', 'v1')
         message = service.users().messages().get(userId='me', id=msg_id, format='full').execute()
         return message
+
+    def get_searchable_email(self, user_email: str, msg_id: str):
+        message = self.get_email_details(user_email, msg_id)
+        headers = {
+            header['name'].lower(): header['value']
+            for header in message.get('payload', {}).get('headers', [])
+        }
+        return {
+            'id': msg_id,
+            'subject': headers.get('subject', ''),
+            'sender': headers.get('from', ''),
+            'date': headers.get('date', ''),
+            'body': self.extract_body(message.get('payload', {})),
+        }
 
     def extract_body(self, payload):
         if 'parts' in payload:

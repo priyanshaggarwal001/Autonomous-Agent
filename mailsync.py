@@ -1,8 +1,6 @@
 import os
-import time
 import asyncio
 import click
-import pyfiglet
 import warnings
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
@@ -10,17 +8,14 @@ from rich.console import Console, Group
 from rich.table import Table
 from rich.live import Live
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.markdown import Markdown
 from rich.text import Text
 from rich.align import Align
-from rich.style import Style
-from rich.layout import Layout
-from prompt_toolkit import PromptSession
-from prompt_toolkit.patch_stdout import patch_stdout
+from rich.prompt import Confirm, Prompt
 
 # New imports
 import datetime
+import re
 from typing import Optional
 
 # Suppress other warnings if needed
@@ -46,91 +41,82 @@ def get_db():
     finally:
         pass # Handle closure in commands
 
-def show_logo():
-    # Fetch user status
+def get_connected_account():
     db = SessionLocal()
-    token = db.query(GoogleToken).first()
-    user_email = token.user_email if token else "Not logged in"
+    token = get_active_token(db)
+    user_email = token.user_email if token else None
     db.close()
+    return user_email
 
-    # --- NOLEAKS Style Circuit Gradient ---
-    GRADIENT = ["bright_green", "green1", "spring_green1", "cyan1", "bright_cyan", "cyan2", "deep_sky_blue1", "bright_blue"]
 
-    # --- High-Resolution Circuit Block Logo (MAILSYNC) ---
-    # Manually crafted 8-letter version for maximum readability and circuit style
-    circuit_logo = [
-        "██   ██  █████  ██ ██       ██████  ██   ██ ███  ██  ██████ ",
-        "███ ███ ██   ██ ██ ██      ██       ██   ██ ███  ██ ██      ",
-        "██ █ ██ ███████ ██ ██       █████    █████  ██ █ ██ ██      ",
-        "██   ██ ██   ██ ██ ██           ██     █    ██  ███ ██      ",
-        "██   ██ ██   ██ ██ ███████ ██████      █    ██   ██  ██████ ",
-        "╚═╝  ╚═╝ ╚═════╝ ╚╝ ╚══════╝╚══════╝    ╚╝    ╚╝   ╚╝  ╚══════╝"
-    ]
+def get_active_token(db):
+    tokens = db.query(GoogleToken).all()
+    return next(
+        (token for token in tokens if (token.token_data or {}).get("is_active")),
+        tokens[0] if tokens else None,
+    )
 
-    # Apply the vertical gradient to the circuit logo
-    styled_logo_lines = []
-    for i, line in enumerate(circuit_logo):
-        color = GRADIENT[min(i, len(GRADIENT)-1)]
-        # Enhance the circuit look by coloring connectors slightly differently
-        styled_line = line.replace("█", f"[{color}]█[/{color}]").replace("═", "[dim cyan]═[/dim cyan]").replace("║", "[dim cyan]║[/dim cyan]").replace("╚", "[dim cyan]╚[/dim cyan]").replace("╝", "[dim cyan]╝[/dim cyan]").replace("╔", "[dim cyan]╔[/dim cyan]").replace("╗", "[dim cyan]╗[/dim cyan]")
-        styled_logo_lines.append(styled_line)
-    styled_logo = "\n".join(styled_logo_lines)
+def show_dashboard(title="MAILSYNC"):
+    account = get_connected_account()
+    status = "Connected" if account else "Not connected"
+    status_style = "green" if account else "yellow"
 
-    # --- Vibrant Copilot-Style Mascot ---
-    def get_mascot(frame_num):
-        eye_color = "bright_green" if frame_num % 2 == 0 else "green3"
-        return [
-            f"   [bright_cyan]▄████████▄[/bright_cyan]  ",
-            f"  [bright_cyan]███▀▀▀▀▀▀███[/bright_cyan] ",
-            f"  [bright_magenta]██[/bright_magenta] [bright_cyan]▄▄[/bright_cyan]  [bright_cyan]▄▄[/bright_cyan] [bright_magenta]██[/bright_magenta] ",
-            f"  [magenta]██[/magenta] [{eye_color}]▀▀[/{eye_color}]  [{eye_color}]▀▀[/{eye_color}] [magenta]██[/magenta] ",
-            f"  [bright_magenta]███▄▄▄▄▄▄███[/bright_magenta] ",
-            f"   [bright_magenta]▀████████▀[/bright_magenta]  "
-        ]
+    header = Panel(
+        Align.center("[bold cyan]MAILSYNC[/bold cyan]\n[dim]Personal email intelligence[/dim]"),
+        border_style="cyan",
+    )
+    account_panel = Panel(
+        f"[{status_style}]● {status}[/{status_style}]\n"
+        f"[dim]{account or 'Run Connect to link your Gmail account'}[/dim]",
+        title="Account",
+        border_style=status_style,
+    )
+    actions = Table.grid(padding=(0, 2))
+    actions.add_column(style="cyan", width=4)
+    actions.add_column(style="white")
+    actions.add_row("1", "Sync and analyze emails")
+    actions.add_row("2", "Ask a question about your mail")
+    actions.add_row("3", "View recent activity")
+    actions.add_row("4", "Connect or reconnect Gmail")
+    actions.add_row("5", "Show help and examples")
+    actions.add_row("0", "Exit")
+    menu_panel = Panel(actions, title="What would you like to do?", border_style="bright_cyan")
+    console.print(Group(header, account_panel, menu_panel))
 
-    def render_frame(frame_num):
-        grid = Table.grid(padding=(0, 4), expand=True)
-        grid.add_column(ratio=3)
-        grid.add_column(ratio=1)
 
-        tagline = Align.right(Text("", style="white dim"), width=55)
-        left_side = Group(
-            Text(" Welcome to Mailsync", style="bold white"),
-            Text.from_markup(styled_logo),
-            tagline
-        )
+def render_workflow(steps, query):
+    table = Table.grid(padding=(0, 1))
+    table.add_column(width=3)
+    table.add_column(width=20, style="bold")
+    table.add_column()
+    for label, state, detail in steps:
+        icon = "✓" if state == "done" else "›" if state == "active" else "·"
+        style = "green" if state == "done" else "cyan" if state == "active" else "dim"
+        table.add_row(f"[{style}]{icon}[/{style}]", label, f"[{style}]{detail}[/{style}]")
+    return Panel(table, title=f"Live workflow  [dim]{query}[/dim]", border_style="cyan")
 
-        mascot_lines = get_mascot(frame_num)
-        right_side = Group(*[Text.from_markup(line) for line in mascot_lines])
 
-        grid.add_row(left_side, right_side)
+def calendar_event_data(extraction, timezone):
+    return {
+        'summary': extraction.title,
+        'location': extraction.location,
+        'description': extraction.description,
+        'start': {
+            'dateTime': extraction.start_time,
+            'timeZone': timezone,
+        },
+        'end': {
+            'dateTime': extraction.end_time,
+            'timeZone': timezone,
+        },
+    }
 
-        # Copilot-style corner brackets
-        width = 78
-        top_line = Text.assemble(("┌", "white dim"), (" " * (width - 2)), ("┐", "white dim"))
-        bottom_line = Text.assemble(("└", "white dim"), (" " * (width - 2)), ("┘", "white dim"))
-
-        description = Text("\nMailsync can scan, analyze and track your emails right from your terminal.\n"
-                           "Connect your account to get started or use the shell for active monitoring.", style="white")
-        
-        status_line = Text.assemble(
-            ("\n● ", "bright_cyan"),
-            ("Logged in as user: ", "white"),
-            (user_email, "bright_cyan")
-        )
-
-        return Group(top_line, grid, bottom_line, description, status_line)
-
-    # --- Animation Loop ---
-    with Live(render_frame(0), refresh_per_second=13, screen=False) as live:
-        for f in range(15):
-            live.update(render_frame(f))
-            time.sleep(0.075)
-
-@click.group()
-def cli():
+@click.group(invoke_without_command=True)
+@click.pass_context
+def cli(context):
     """mailsync: AI-powered Email Analysis assistant."""
-    pass
+    if context.invoked_subcommand is None:
+        context.invoke(shell)
 
 @cli.command()
 def login():
@@ -150,16 +136,20 @@ def login():
 def status():
     """Show current login status."""
     db = get_db()
-    token = db.query(GoogleToken).first()
+    token = get_active_token(db)
     if token:
         console.print(f"[bold green]Logged in as:[/bold green] {token.user_email}")
     else:
         console.print("[bold red]Not logged in.[/bold red] Run 'mailsync login' first.")
     db.close()
 
-async def run_sync(start_date: Optional[datetime.datetime] = None, end_date: Optional[datetime.datetime] = None):
+async def run_sync(
+    start_date: Optional[datetime.datetime] = None,
+    end_date: Optional[datetime.datetime] = None,
+    focus: Optional[str] = None,
+):
     db = get_db()
-    token = db.query(GoogleToken).first()
+    token = get_active_token(db)
     if not token:
         console.print("[bold red]Error:[/bold red] Not logged in. Run 'mailsync login' first.")
         db.close()
@@ -169,13 +159,24 @@ async def run_sync(start_date: Optional[datetime.datetime] = None, end_date: Opt
     google_service = GoogleService(db)
     agent_service = AgentService()
     timezone = os.getenv("TIMEZONE", "UTC")
+    steps = [
+        ["Connect to Gmail", "active", "Checking account"],
+        ["Find messages", "pending", "Waiting"],
+        ["Read and analyze", "pending", "Waiting"],
+        ["Create calendar events", "pending", "Waiting"],
+        ["Finish", "pending", "Waiting"],
+    ]
 
-    with Progress(
-        SpinnerColumn("simpleDots"),
-        TextColumn("[progress.description]{task.description}"),
-        console=console
-    ) as progress:
+    def update_step(index, state, detail):
+        steps[index][1] = state
+        steps[index][2] = detail
+        live.update(render_workflow(steps, query_string))
+
+    with Live(render_workflow(steps, "preparing"), refresh_per_second=8, console=console) as live:
         query_parts = []
+        if focus:
+            focus_words = [word for word in re.findall(r"[\w@.-]+", focus.lower()) if len(word) > 2]
+            query_parts.extend(focus_words[:8])
         if start_date:
             query_parts.append(f'after:{start_date.strftime("%Y/%m/%d")}')
             if not end_date: # If only start_date is provided, end_date defaults to today
@@ -183,19 +184,24 @@ async def run_sync(start_date: Optional[datetime.datetime] = None, end_date: Opt
             query_parts.append(f'before:{end_date.strftime("%Y/%m/%d")}')
         
         query_string = " ".join(query_parts) if query_parts else 'is:unread newer_than:2d'
-        
-        task_description = f"Scanning emails with query: '{query_string}'..." if query_string else "Scanning unread emails..."
-        task = progress.add_task(task_description, total=None)
+        live.update(render_workflow(steps, query_string))
         
         try:
-            messages = google_service.list_messages(user_email, query=query_string, max_results=500)
+            update_step(0, "done", f"Connected as {user_email}")
+            update_step(1, "active", "Searching Gmail")
+            max_messages = max(1, int(os.getenv("MAX_SYNC_MESSAGES", "10")))
+            messages = google_service.list_messages(
+                user_email, query=query_string, max_results=max_messages
+            )
             if not messages:
-                progress.update(task, description="No new emails found matching criteria.")
+                update_step(1, "done", "No matching messages")
+                update_step(4, "done", "Nothing to process")
                 return
 
-            progress.update(task, description=f"Found {len(messages)} emails. Processing...")
+            update_step(1, "done", f"Found {len(messages)} messages")
+            update_step(2, "active", "Starting analysis")
             
-            for msg_meta in messages:
+            for position, msg_meta in enumerate(messages, start=1):
                 msg_id = msg_meta['id']
                 
                 # Check if already processed
@@ -203,7 +209,7 @@ async def run_sync(start_date: Optional[datetime.datetime] = None, end_date: Opt
                 if exists:
                     continue
                 
-                progress.update(task, description=f"Analyzing email {msg_id}...")
+                update_step(2, "active", f"Analyzing {position} of {len(messages)}")
                 
                 try:
                     full_msg = google_service.get_email_details(user_email, msg_id)
@@ -219,40 +225,26 @@ async def run_sync(start_date: Optional[datetime.datetime] = None, end_date: Opt
                     
                     extraction = None
                     if pdf_bytes:
-                        extraction = await agent_service.analyze_with_pdf(body, pdf_bytes)
+                        extraction = await agent_service.analyze_with_pdf(body, pdf_bytes, focus=focus)
                     else:
-                        extraction = await agent_service.analyze_email(body)
+                        extraction = await agent_service.analyze_email(body, focus=focus)
 
                     status = 'skipped'
                     if extraction.is_event and extraction.importance_score >= 5:
-                        progress.update(task, description=f"Event detected: {extraction.title}. Creating calendar event...")
+                        update_step(3, "active", f"Adding {extraction.title}")
                         
-                        event_data = {
-                            'summary': extraction.title,
-                            'location': extraction.location,
-                            'description': extraction.description,
-                            'start': {
-                                'dateTime': extraction.start_time,
-                                'timeZone': timezone,
-                            },
-                            'end': {
-                                'dateTime': extraction.end_time,
-                                'timeZone': timezone,
-                            },
-                        }
+                        event_data = calendar_event_data(extraction, timezone)
                         
                         try:
                             # Filter out None values
                             event_data = {k: v for k, v in event_data.items() if v is not None}
                             if event_data.get('start', {}).get('dateTime') and event_data.get('end', {}).get('dateTime'):
                                 created_event = google_service.create_calendar_event(user_email, event_data)
-                                console.print(f"Calendar event created: {created_event.get('htmlLink')}")
                                 status = 'added'
                             else:
-                                console.print(f"Skipping calendar event creation for '{extraction.title}': Missing start or end time.")
                                 status = 'skipped_no_time'
                         except Exception as calendar_e:
-                            console.print(f"Failed to create calendar event for {extraction.title}: {calendar_e}")
+                            update_step(3, "active", f"Calendar skipped: {calendar_e}")
                             status = 'error_calendar'
                     
                     record = ProcessedEmailRecord(
@@ -268,19 +260,76 @@ async def run_sync(start_date: Optional[datetime.datetime] = None, end_date: Opt
                     console.print(f"[red]Error processing {msg_id}: {e}[/red]")
                     db.rollback()
 
-            progress.update(task, description="[bold green]Sync complete!")
+            update_step(2, "done", "Analysis complete")
+            update_step(3, "done", "Calendar updates complete")
+            update_step(4, "done", f"Processed {len(messages)} messages")
             
         except Exception as e:
-            console.print(f"[bold red]Sync failed: {e}[/bold red]")
+            update_step(4, "active", f"Stopped: {e}")
         finally:
             db.close()
+
+async def run_question(question: str):
+    """Search Gmail and answer a natural-language question from the best matches."""
+    db = get_db()
+    token = get_active_token(db)
+    if not token:
+        console.print("[bold red]Error:[/bold red] Not logged in. Run 'mailsync login' first.")
+        db.close()
+        return
+
+    try:
+        google_service = GoogleService(db)
+        agent_service = AgentService()
+        words = [word for word in re.findall(r"[\w@.-]+", question.lower()) if len(word) > 2]
+        gmail_query = " ".join(words[:8])
+        message_refs = google_service.list_messages(
+            token.user_email, query=gmail_query or None, max_results=50
+        )
+        emails = [
+            google_service.get_searchable_email(token.user_email, ref['id'])
+            for ref in message_refs
+        ]
+        question_words = set(words)
+
+        def relevance(email):
+            haystack = " ".join(
+                [email.get('subject', ''), email.get('sender', ''), email.get('body', '')]
+            ).lower()
+            return sum(haystack.count(word) for word in question_words)
+
+        emails = sorted(emails, key=relevance, reverse=True)[:8]
+        if not emails:
+            console.print("[yellow]I could not find matching messages in Gmail.[/yellow]")
+            return
+        answer = await agent_service.answer_mail_question(question, emails)
+        console.print(Panel(Markdown(answer), title="Mail answer", border_style="bright_cyan"))
+        if Confirm.ask("Add a detected event from the strongest matching email to Google Calendar?", default=False):
+            extraction = await agent_service.analyze_email(emails[0]['body'], focus=question)
+            if not extraction.is_event or not extraction.start_time or not extraction.end_time:
+                console.print("[yellow]I could not find a complete calendar event in that email.[/yellow]")
+            else:
+                event_data = calendar_event_data(extraction, os.getenv("TIMEZONE", "UTC"))
+                google_service.create_calendar_event(token.user_email, event_data)
+                console.print(f"[green]Added '{extraction.title}' to Google Calendar.[/green]")
+    except Exception as error:
+        console.print(f"[bold red]Question failed: {error}[/bold red]")
+    finally:
+        db.close()
 
 @cli.command()
 @click.option('--start-date', type=click.DateTime(['%Y-%m-%d']), help='Start date (YYYY-MM-DD) to sync emails from.')
 @click.option('--end-date', type=click.DateTime(['%Y-%m-%d']), help='End date (YYYY-MM-DD) to sync emails to. Defaults to today if start-date is provided.')
-def sync(start_date: Optional[datetime.datetime], end_date: Optional[datetime.datetime]):
+@click.option('--question', '--focus', 'focus', help='Only analyze messages relevant to this question or instruction.')
+def sync(start_date: Optional[datetime.datetime], end_date: Optional[datetime.datetime], focus: Optional[str]):
     """Sync and analyze emails. Can specify a date range."""
-    asyncio.run(run_sync(start_date=start_date, end_date=end_date))
+    asyncio.run(run_sync(start_date=start_date, end_date=end_date, focus=focus))
+
+@cli.command()
+@click.argument('question')
+def ask(question: str):
+    """Find relevant Gmail messages and answer a question about them."""
+    asyncio.run(run_question(question))
 
 @cli.command()
 def history():
@@ -294,9 +343,10 @@ def history():
         return
 
     table = Table(title="[bold cyan]Sync History (Last 10)[/bold cyan]")
-    table.add_column("Date", style="dim")
+    table.add_column("Added on", style="dim")
     table.add_column("Status", style="bold")
     table.add_column("Title")
+    table.add_column("Event date", style="cyan")
     table.add_column("Score", justify="right")
     table.add_column("Reasoning")
 
@@ -307,6 +357,7 @@ def history():
             r.processed_at.strftime("%Y-%m-%d %H:%M"),
             f"[{status_style}]{r.status}[/{status_style}]",
             data.get('title', 'N/A'),
+            data.get('start_time') or "-",
             str(data.get('importance_score', 0)),
             data.get('reasoning', '')
         )
@@ -314,81 +365,92 @@ def history():
     console.print(table)
     db.close()
 
-from rich.layout import Layout
-from rich.align import Align
-from rich.console import Group
-from prompt_toolkit import PromptSession
-from prompt_toolkit.patch_stdout import patch_stdout
-
 @cli.command()
 def shell():
-    """Enter the interactive Mailsync Neural Shell."""
-    session = PromptSession()
-    
-    console.print(Panel(
-        Align.center("[bold bright_green]MAILSYS NEURAL INTERFACE[/bold bright_green]\n[dim]v1.0.0 - Interactive Mode[/dim]"),
-        border_style="bright_green"
-    ))
-    
-    while True:
-        with patch_stdout():
+    """Open the guided Mailsync workspace."""
+    def guided_login():
+        if get_connected_account():
+            console.print("[green]Gmail is already connected.[/green]")
+            return
+        if Confirm.ask("Connect your Gmail account now", default=True):
+            db = get_db()
             try:
-                cmd = session.prompt("mailsync > ")
-                cmd = cmd.strip().lower()
-                
-                if not cmd:
-                    continue
-                if cmd in ["exit", "quit"]:
-                    break
-                elif cmd == "sync":
-                    console.print("[cyan]Triggering Neural Sync...[/cyan]")
-                    asyncio.run(run_sync())
-                elif cmd == "history":
-                    console.print("[yellow]Fetching history...[/yellow]")
-                    # Call history logic
-                    db = get_db()
-                    records = db.query(ProcessedEmailRecord).order_by(ProcessedEmailRecord.processed_at.desc()).limit(10).all()
-                    if not records:
-                        console.print("[yellow]No history found.[/yellow]")
-                    else:
-                        table = Table(title="[bold cyan]Sync History (Last 10)[/bold cyan]")
-                        table.add_column("Date", style="dim")
-                        table.add_column("Status", style="bold")
-                        table.add_column("Title")
-                        table.add_column("Score", justify="right")
-                        for r in records:
-                            data = r.extraction_data
-                            status_style = "green" if r.status == "processed" else "yellow"
-                            table.add_row(
-                                r.processed_at.strftime("%Y-%m-%d %H:%M"),
-                                f"[{status_style}]{r.status}[/{status_style}]",
-                                data.get('title', 'N/A'),
-                                str(data.get('importance_score', 0))
-                            )
-                        console.print(table)
-                    db.close()
-                elif cmd == "status":
-                    db = get_db()
-                    token = db.query(GoogleToken).first()
-                    if token:
-                        console.print(f"[bold green]Connection stable:[/bold green] {token.user_email}")
-                    else:
-                        console.print("[bold red]Not logged in.[/bold red]")
-                    db.close()
-                elif cmd == "help":
-                    console.print("[bold cyan]Available Commands:[/bold cyan]")
-                    console.print("  [green]sync[/green]    - Run a full sync and analysis")
-                    console.print("  [green]history[/green] - View recent processed emails")
-                    console.print("  [green]status[/green]  - Check connection status")
-                    console.print("  [green]help[/green]    - Show this help message")
-                    console.print("  [green]exit[/green]    - Leave the shell")
-                else:
-                    console.print(f"[red]Unknown command: {cmd}. Type 'help' for options.[/red]")
-            except KeyboardInterrupt:
-                continue
-            except EOFError:
-                break
+                console.print("[cyan]Opening Google's secure login page...[/cyan]")
+                email = GoogleService(db).login_cli()
+                console.print(f"[green]Connected as {email}.[/green]")
+            except Exception as error:
+                console.print(f"[red]Login failed: {error}[/red]")
+            finally:
+                db.close()
+
+    def guided_sync():
+        choice = Prompt.ask(
+            "How much mail should I scan?",
+            choices=["recent", "custom", "all"],
+            default="recent",
+            show_choices=True,
+        )
+        if choice == "recent":
+            focus = Prompt.ask("Ask a question about the emails to analyze (optional)", default="")
+            asyncio.run(run_sync(focus=focus or None))
+        elif choice == "all":
+            focus = Prompt.ask("Ask a question about the emails to analyze (optional)", default="")
+            asyncio.run(run_sync(datetime.datetime(2000, 1, 1), datetime.datetime.utcnow(), focus=focus or None))
+        else:
+            start = Prompt.ask("Start date", default=(datetime.date.today() - datetime.timedelta(days=7)).isoformat())
+            end = Prompt.ask("End date", default=datetime.date.today().isoformat())
+            focus = Prompt.ask("Ask a question about these emails", default="")
+            try:
+                asyncio.run(run_sync(
+                    datetime.datetime.strptime(start, "%Y-%m-%d"),
+                    datetime.datetime.strptime(end, "%Y-%m-%d"),
+                    focus=focus or None,
+                ))
+            except ValueError:
+                console.print("[red]Use dates in YYYY-MM-DD format.[/red]")
+
+    def guided_ask():
+        console.print(Panel(
+            "Examples:\n"
+            "[dim]• What are my exam dates and subject names?\n"
+            "• Find emails from my university about registration.\n"
+            "• What did Company X say about my interview?[/dim]",
+            title="Ask your mailbox",
+            border_style="cyan",
+        ))
+        question = Prompt.ask("Question")
+        if question.strip():
+            asyncio.run(run_question(question.strip()))
+
+    def guided_help():
+        console.print(Panel(
+            "[bold]Sync[/bold] searches Gmail, analyzes email content and PDFs, then adds important events to Google Calendar.\n\n"
+            "[bold]Ask[/bold] finds the most relevant messages and answers using their subjects, senders, dates and content.\n\n"
+            "[bold]Date options[/bold] keep scans focused: recent mail is fastest, custom dates give control, and all mail is the broadest search.",
+            title="How Mailsync works",
+            border_style="bright_cyan",
+        ))
+
+    if not get_connected_account():
+        show_dashboard()
+        guided_login()
+
+    while True:
+        show_dashboard()
+        choice = Prompt.ask("Choose an action", choices=["1", "2", "3", "4", "5", "0"], default="1")
+        if choice == "1":
+            guided_sync()
+        elif choice == "2":
+            guided_ask()
+        elif choice == "3":
+            history.callback() if hasattr(history, "callback") else history()
+        elif choice == "4":
+            guided_login()
+        elif choice == "5":
+            guided_help()
+        elif choice == "0":
+            console.print("[dim]Goodbye.[/dim]")
+            break
 
 if __name__ == "__main__":
-    show_logo()
     cli()
